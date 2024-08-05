@@ -1,0 +1,10 @@
+{
+  "projectName": "abidipro",
+  "meta": {
+    "type": "backend"
+  },
+  "backend": {
+    "platform": "node17"
+  },
+  "hash": "91d30aef"
+}
