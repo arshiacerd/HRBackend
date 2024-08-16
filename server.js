@@ -1586,3 +1586,37 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
 
+// Environment variables
+const GOOGLE_API_KEY = 'AIzaSyCWDgo9mAmsMOeqoX9d5wMXnPs0XhRKEMQ';
+const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
+
+// Chat Message Schema and Model (if needed)
+const chatMessageSchema = new mongoose.Schema({
+  userMessage: { type: String, required: true },
+  botResponse: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
+// Chatbot API Endpoint
+app.post('/api/chatbot', async (req, res) => {
+  try {
+    const { message } = req.body;
+    console.log('Received message:', message);
+
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      console.error('Invalid message value:', message);
+      return res.status(400).json({ error: 'Invalid message value' });
+    }
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent([message]);
+    const aiResponse = result.response.text();
+    console.log('AI response:', aiResponse);
+
+    res.status(201).json({ answer: aiResponse });
+  } catch (error) {
+    console.error('Error processing chatbot message:', error);
+    res.status(500).json({ error: 'Error processing chatbot message' });
+  }
+});
