@@ -9,6 +9,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const stripe = require('stripe')('sk_test_51POLSORr2k4AYrtAMTYxJpf3cZ55y7E23oRnHNAVtT96O28obBtB6zPA9ts8O7fdum9qIlw733YqhLuUbG6tNh7B008htkEosZ');
+const cron = require('node-cron');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +26,7 @@ const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, './public');
   },
+
   filename: function (req, file, cb) {
     try {
       if (req.body.email) {
@@ -56,23 +59,10 @@ const storage = multer.diskStorage({
 
 
 
-const upload = multer({ storage: storage })
-
-app.post('/api/profile', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.body.email) {
-      res.status(500).json({ error: 'Uplaoding Mechanism got error!' });
-      return;
-    }
-    res.status(200).json({ message: "Successfully Uploaded !" });
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).send('Internal Server Error');
-  }
-})
+const upload = multer({ storage: storage });
 
 
-const documentInfoSchema = new mongoose.Schema({
+const DocumentInfoSchema = new mongoose.Schema({
   filename: { type: String, required: true },
   sentBy: { type: String, required: true },
   dated: { type: Date, required: true },
@@ -80,30 +70,32 @@ const documentInfoSchema = new mongoose.Schema({
   path: { type: String, required: true }
 });
 
-const DocumentInfo = mongoose.model('DocumentInfo', documentInfoSchema);
-
-// Upload endpoint
+const DocumentInfo = mongoose.model('DocumentInfo', DocumentInfoSchema);
 app.post('/api/document', upload.single('file'), async (req, res) => {
   try {
+    // Ensure the file and required fields are present
+    if (!req.file || !req.body.filename || !req.body.sentBy || !req.body.dated || !req.body.reason) {
+      return res.status(400).json({ error: 'Missing required fields or file' });
+    }
+
     const data = {
       filename: req.body.filename,
       sentBy: req.body.sentBy,
       dated: req.body.dated,
       reason: req.body.reason,
-      path: "doc-" + req.body.filename + ".pdf",
+      path: req.file.path,  // Use the path from multer's file object
     };
 
     const documentInfo = new DocumentInfo(data);
     await documentInfo.save();
 
-    res.status(200).json({ message: "Successfully Uploaded !" });
+    res.status(200).json({ message: "Successfully Uploaded!" });
   } catch (error) {
     console.error('Error:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
-// Show documents endpoint
 app.get('/api/documents', async (req, res) => {
   try {
     const documents = await DocumentInfo.find();
@@ -113,53 +105,90 @@ app.get('/api/documents', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
+
 mongoose.connect('mongodb+srv://signup:signup123@signup.huufj5v.mongodb.net/?retryWrites=true&w=majority&appName=signup', { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
 
 
-const transport = nodemailer.createTransport({
-  service: "Outlook",
-  auth: {
-    user: 'abidipro01@outlook.com',
-    pass: 'vpwjxxgcmysinphh'
-  }
-})
 
-// Api to send Mail Regarding Timeoff Approval
-app.get("/api/timeoff/mail", (req, res) => {
-  let personalInfo = req.query;
-  // {
-  //   id:index,
-  //   reason:reason,
-  //   off_date:off_date,
-  //   end_date:end_date
-  //  }
-  let mailOptions = {
-    from: 'abidipro01@outlook.com',
-    to: `${personalInfo.email}`,
-    subject: 'TimeOff Request Approved (Abidi-Pro Solution!)',
-    html: `<div class="container">
-    <img src="https://abidisolutions.com/wp-content/uploads/2023/09/Official-Abidi-Solutions-website-logo-01.png" height="90" width="170" style="vertical-align: middle;"/>
-    <p style="marginTop:3px;">Welcome to AbidiPro, your timeoff request for ${personalInfo.reason} is aprroved by the company.</p>
-   
-    <b>Timeoff Duration</b>
-    <ul>
-        <li>From: ${personalInfo.off_date.slice(0, 10)}</li>
-        <li>To: ${personalInfo.end_date.slice(0, 10)}</li>
-    </ul>
-  </div>`
-  }
-  transport.sendMail(mailOptions, function (err, info) {
-    if (err) {
-      console.log(err);
-    } else {
-      console.log("Email Sent" + info.response);
+  // Configure the transporter
+  const transporter = nodemailer.createTransport({
+    service: 'Outlook',
+    auth: {
+      user: 'abidipro01@outlook.com',
+      pass: 'vpwjxxgcmysinphh'
     }
-  })
+  });
+  
 
-})
-
+  app.post('/api/scheduleEvent/sendMail', (req, res) => {
+    const { email, subject, message, eventTime } = req.body;
+  
+    // Convert eventTime to a cron schedule
+    // Example conversion: "2024-08-10T15:30:00Z" to "30 15 10 8 *"
+    const eventDate = new Date(eventTime);
+    const cronSchedule = `${eventDate.getMinutes()} ${eventDate.getHours()} ${eventDate.getDate()} ${eventDate.getMonth() + 1} *`;
+  
+    try {
+      cron.schedule(cronSchedule, function () {
+        const mailOptions = {
+          from: 'abidipro01@outlook.com',
+          to: email,
+          subject,
+          text: message,
+        };
+  
+        transporter.sendMail(mailOptions, function (error, info) {
+          if (error) {
+            console.error('Error sending email:', error);
+            res.status(500).json({ message: 'Error sending email', error });
+          } else {
+            console.log('Email sent:', info.response);
+            res.status(200).json({ message: 'Email scheduled successfully' });
+          }
+        });
+      });
+  
+      res.status(200).json({ message: 'Email scheduled successfully' });
+    } catch (error) {
+      console.error('Error scheduling email:', error);
+      res.status(500).json({ message: 'Error scheduling email', error });
+    }
+  });
+  
+  // Define the route to send the mail
+  app.get('/api/timeoff/mail', async (req, res) => {
+    try {
+      const { email, reason, off_date, end_date } = req.query;
+  
+      // Construct mail options
+      const mailOptions = {
+        from: 'abidipro01@outlook.com',
+        to: email,
+        subject: 'Time Off Request Approved (Abidi-Pro Solution!)',
+        html: `<div class="container">
+          <img src="https://abidisolutions.com/wp-content/uploads/2023/09/Official-Abidi-Solutions-website-logo-01.png" height="90" width="170" style="vertical-align: middle;"/>
+          <p style="margin-top: 3px;">Welcome to AbidiPro, your time off request for ${reason} is approved by the company.</p>
+          <b>Time off Duration</b>
+          <ul>
+              <li>From: ${new Date(off_date).toLocaleDateString()}</li>
+              <li>To: ${new Date(end_date).toLocaleDateString()}</li>
+          </ul>
+        </div>`
+      };
+  
+      // Send email
+      await transporter.sendMail(mailOptions);
+  
+      // Respond with success
+      res.status(200).json({ message: 'Email sent successfully' });
+    } catch (error) {
+      console.error('Error sending email:', error);
+      res.status(500).json({ error: 'An error occurred while sending the email' });
+    }
+  });
+  
 // Api to send Welcome Mail
 
 app.get("/api/createUser/mail", (req, res) => {
@@ -271,6 +300,30 @@ app.get("/api/timeoff/notify-manager", (req, res) => {
 })
 
 
+
+////////dashboard
+
+
+app.get('/api/employeeCount', async (req, res) => {
+  try {
+    const count = await User.countDocuments(); // Replace with your actual model
+    res.json({ count });
+  } catch (error) {
+    console.error('Error fetching employee count:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+app.get('api/project/count', async (req, res) => {
+  try {
+    const count = await Project.countDocuments({});
+    res.json({ count });
+  } catch (error) {
+    console.error('Error fetching project count:', error); // Log the exact error
+    res.status(500).json({ error: 'Failed to fetch project count' });
+  }
+});
+
 ///////////////////////////// TIME OFF  SCHEMA  //////////////////////////////////////////////////////////////////////////////////
 
 
@@ -361,7 +414,6 @@ const assignedTaskSchema = new mongoose.Schema({
   assignedBy: { type: String, required: true },
   startDate: { type: Date, required: true },
   endDate: { type: Date, required: true },
-  textDescription: { type: String, required: true },
   taskStatus: String,
 });
 
@@ -394,16 +446,19 @@ app.post('/api/timeEntries', async (req, res) => {
     await timeEntry.save();
     res.status(201).send(timeEntry);
   } catch (error) {
-    res.status(500).send({ error: 'Internal server error' });
+    console.error("Error creating time entry:", error); // Log the error
+    res.status(500).send({ error: 'Internal server error', details: error.message });
   }
 });
+
 
 app.get('/api/timeEntries', async (req, res) => {
   try {
     const timeEntries = await TimeEntry.find({ email: req.query.email }).sort({ date: -1, checkOut: -1 }).limit(10);
     res.status(200).send(timeEntries);
   } catch (error) {
-    res.status(500).send(error);
+    console.error("Error fetching time entries:", error); // Improved logging
+    res.status(500).send({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -709,6 +764,19 @@ app.get('/api/users/userName', async (req, res) => {
   }
 });
 
+// In your Express.js server file
+app.get('/api/users/current', async (req, res) => {
+  try {
+    const userId = req.user.id; // Adjust based on how you get the current user's ID
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ user });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 //////////////////////////////////////// CREATE USER SAVING AND SENDING DATA TO MONGODB //////////////////////////////////////////////////////////////////////////////////
 
@@ -768,6 +836,18 @@ app.post('/api/users/create-user', async (req, res) => {
   }
 });
 
+app.get('/api/getUserById', async (req, res) => {
+  try {
+    const user = await User.findById(req.query.id);
+    if (!user) return res.status(404).send('User not found');
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
 app.get("/api/getName", async (req, res) => {
   try {
     const user = await User.find({ email: req.query.email });
@@ -795,6 +875,8 @@ app.delete("/api/deleteUser", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 })
+
+
 
 app.delete("/api/deleteTask", async (req, res) => {
 
@@ -974,9 +1056,11 @@ app.post('/api/create-tasks', async (req, res) => {
     await task.save();
     res.status(201).send(task);
   } catch (error) {
+    console.error('Error creating task:', error);
     res.status(400).send(error);
   }
 });
+
 
 app.put("/api/updateStatus", async (req, res) => {
   try {
@@ -990,41 +1074,45 @@ app.put("/api/updateStatus", async (req, res) => {
   }
 })
 
-// GET endpoint to fetch all tasks
-app.get('/api/create-tasks', async (req, res) => {
-  try {
-    const tasks = await createTask.find({ assignedBy: { $regex: new RegExp(req.query.name, "i") } });
-    res.send(tasks);
-  } catch (error) {
-    console.error(error); // Log the error to the console
+// // GET endpoint to fetch all tasks
+// app.get('/api/create-tasks', async (req, res) => {
+//   try {
+//     const tasks = await createTask.find({ 
+//       assignedBy: { $regex: new RegExp(req.query.name, "i") }
+//     });
+//     res.send(tasks);
+//   } catch (error) {
+//     console.error('Error fetching tasks by assignedBy:', error);
+//     res.status(500).send({ message: "Server error" });
+//   }
+// });
 
-    res.status(500).send();
-  }
-});
 
 app.get('/api/my-tasks', async (req, res) => {
   try {
-    const tasks = await createTask.find({ assignedTo: { $regex: new RegExp(req.query.name, "i") } });
+    const tasks = await Task.find({ 
+      assignedTo: { $regex: new RegExp(req.query.name, "i") }
+    });
     res.send(tasks);
   } catch (error) {
-    console.error(error); // Log the error to the console
-
-    res.status(500).send();
+    console.error('Error fetching tasks by assignedTo:', error);
+    res.status(500).send({ message: "Server error" });
   }
 });
 
-// PATCH endpoint to update a task
-app.patch('/api/create-tasks/update', async (req, res) => {
-  try {
-    const task = await createTask.findByIdAndUpdate(req.body._id, req.body, { new: true, runValidators: true });
-    if (!task) {
-      return res.status(404).send();
-    }
-    res.send(task);
-  } catch (error) {
-    res.status(400).send(error);
-  }
-});
+
+// // PATCH endpoint to update a task
+// app.patch('/api/create-tasks/update', async (req, res) => {
+//   try {
+//     const task = await createTask.findByIdAndUpdate(req.body._id, req.body, { new: true, runValidators: true });
+//     if (!task) {
+//       return res.status(404).send();
+//     }
+//     res.send(task);
+//   } catch (error) {
+//     res.status(400).send(error);
+//   }
+// });
 
 
 
@@ -1186,10 +1274,13 @@ app.get('/api/users/names', async (req, res) => {
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////Account page api ////////////////////
-
 // Update user account details
 app.put('/api/users/updateAccount', async (req, res) => {
-  const { userId, name, personalEmail, phoneNumber, gender, birthday, street, city, state, country, linkedinId, twitter, facebook, designation, image, resume, education, experiences, emergencyContacts } = req.body;
+  const { 
+    userId, name, personalEmail, phoneNumber, gender, birthday, 
+    street, city, state, country, linkedinId, twitter, facebook, 
+    designation, image, resume, education, experiences, emergencyContacts 
+  } = req.body;
 
   try {
     const user = await User.findById(userId);
@@ -1251,12 +1342,20 @@ app.get('/api/timeoff', async (req, res) => {
   const email = req.query.email;
 
   try {
-    const timeOffRequests = await TimeOff.find({});
+    let timeOffRequests;
+    if (email) {
+      timeOffRequests = await TimeOff.find({ Email: email });
+    } else {
+      timeOffRequests = await TimeOff.find({});
+    }
     res.status(200).json(timeOffRequests);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Error fetching time off requests:', error);
+    res.status(500).json({ message: 'An error occurred while fetching time off requests', error: error.message });
   }
 });
+
+
 
 app.post('/api/timeoff/approve', async (req, res) => {
   try {
@@ -1566,6 +1665,10 @@ const projectSuggestionSchema = new mongoose.Schema({
 
 const ProjectSuggestion = mongoose.model('ProjectSuggestion', projectSuggestionSchema);
 
+
+
+
+
 // Project Suggestion API Endpoint
 app.post('/api/feedback-project', async (req, res) => {
   try {
@@ -1584,5 +1687,50 @@ app.post('/api/feedback-project', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+});
+
+
+
+///////////////////// ChatBot ///////////////////
+
+// Environment variables
+const GOOGLE_API_KEY = 'AIzaSyCWDgo9mAmsMOeqoX9d5wMXnPs0XhRKEMQ';
+const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY);
+
+// Chat Message Schema and Model (if needed)
+const chatMessageSchema = new mongoose.Schema({
+  userMessage: { type: String, required: true },
+  botResponse: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.send('Server is running');
+});
+
+// Chatbot API Endpoint
+app.post('/api/chatbot', async (req, res) => {
+  try {
+    const { message } = req.body;
+    console.log('Received message:', message);
+
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      console.error('Invalid message value:', message);
+      return res.status(400).json({ error: 'Invalid message value' });
+    }
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent([message]);
+    const aiResponse = result.response.text();
+    console.log('AI response:', aiResponse);
+
+    res.status(201).json({ answer: aiResponse });
+  } catch (error) {
+    console.error('Error processing chatbot message:', error);
+    res.status(500).json({ error: 'Error processing chatbot message' });
+  }
 });
 
